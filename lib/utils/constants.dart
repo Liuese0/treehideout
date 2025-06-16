@@ -5,3 +5,5 @@ const String apiBaseUrl = 'http://172.30.1.59:5000'; // 안드로이드 에뮬�
 // 소켓 서버 URL
 const String socketBaseUrl = 'http://172.30.1.59:5000';
 // const String socketBaseUrl = 'http://localhost:5000'; // iOS 시뮬레이터 또는 웹에서 사용
+
+

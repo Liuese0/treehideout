@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
-import '../models/message.dart';
+import '../ai/ai_detector_model.dart';
+import 'security_settings_screen.dart';
 import 'package:intl/intl.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -21,11 +22,18 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _initializeSecurity();
+
     // 첫 로드 시 메시지 목록 맨 아래로 스크롤
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom();
       _isFirstLoad = false;
     });
+  }
+
+  Future<void> _initializeSecurity() async {
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+    await chatProvider.initializeSecurity();
   }
 
   @override
@@ -84,14 +92,25 @@ class _ChatScreenState extends State<ChatScreen> {
       final chatProvider = Provider.of<ChatProvider>(context, listen: false);
 
       debugPrint('메시지 전송 요청: $message');
-      await chatProvider.sendMessage(
+      final success = await chatProvider.sendMessage(
           message,
           authProvider.tempId!,
           authProvider.anonymousId,
           authProvider.nickname,
           authProvider.uniqueIdentifier
       );
-      debugPrint('메시지 전송 성공');
+
+      if (success) {
+        debugPrint('메시지 전송 성공');
+      } else {
+        debugPrint('메시지가 보안 검사에 의해 차단됨');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('메시지가 보안 정책에 의해 차단되었습니다'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } catch (error) {
       debugPrint('메시지 전송 실패: $error');
       if (mounted) {
@@ -146,37 +165,30 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: Text(currentRoom.name),
         actions: [
+          // 보안 상태 표시
+          _buildSecurityStatusIndicator(chatProvider),
           IconButton(
-            icon: const Icon(Icons.info_outline),
+            icon: const Icon(Icons.security),
             onPressed: () {
-              // 방 정보 표시 (참가자 수 등)
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: Text(currentRoom.name),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('생성 일시: ${DateFormat('yyyy-MM-dd HH:mm').format(currentRoom.createdAt)}'),
-                      const SizedBox(height: 8),
-                      const Text('모든 메시지는 E2E 암호화로 보호됩니다.'),
-                    ],
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      child: const Text('닫기'),
-                    ),
-                  ],
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const SecuritySettingsScreen(),
                 ),
               );
             },
+          ),
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () => _showRoomInfo(currentRoom),
           ),
         ],
       ),
       body: Column(
         children: [
+          // 보안 통계 바
+          _buildSecurityStatsBar(chatProvider),
+
           Expanded(
             child: messages.isEmpty
                 ? const Center(
@@ -225,11 +237,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   uniqueId = message.senderUniqueId ?? "???";
                 }
 
-                return _MessageBubble(
+                return _SecureMessageBubble(
                   message: message,
                   isMe: isMe,
                   nickname: displayName,
                   uniqueId: uniqueId,
+                  onRetry: () => _retryMessage(message),
+                  onShowSecurityDetails: () => _showSecurityDetails(message),
                 );
               },
             ),
@@ -285,19 +299,202 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
+
+  Widget _buildSecurityStatusIndicator(ChatProvider chatProvider) {
+    final securityEnabled = chatProvider.securityEnabled;
+
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      child: Icon(
+        securityEnabled ? Icons.security : Icons.security_outlined,
+        color: securityEnabled ? Colors.green : Colors.grey,
+        size: 20,
+      ),
+    );
+  }
+
+  Widget _buildSecurityStatsBar(ChatProvider chatProvider) {
+    final dashboard = chatProvider.getSecurityDashboard();
+    final blockedCount = dashboard['blocked_messages'] ?? 0;
+    final warningCount = dashboard['warning_messages'] ?? 0;
+
+    if (blockedCount == 0 && warningCount == 0) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: Colors.blue.withOpacity(0.1),
+      child: Row(
+        children: [
+          const Icon(Icons.security, size: 16, color: Colors.blue),
+          const SizedBox(width: 8),
+          Text(
+            '보안 통계: ',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.blue.shade700,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          if (blockedCount > 0) ...[
+            Text(
+              '차단 $blockedCount',
+              style: const TextStyle(fontSize: 12, color: Colors.red),
+            ),
+            const SizedBox(width: 8),
+          ],
+          if (warningCount > 0) ...[
+            Text(
+              '경고 $warningCount',
+              style: const TextStyle(fontSize: 12, color: Colors.orange),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showRoomInfo(room) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(room.name),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('생성 일시: ${DateFormat('yyyy-MM-dd HH:mm').format(room.createdAt)}'),
+            const SizedBox(height: 8),
+            const Text('모든 메시지는 AI 보안 검사를 통과합니다.'),
+            const SizedBox(height: 8),
+            const Text('E2E 암호화로 보호됩니다.'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('닫기'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _retryMessage(SecureMessage message) async {
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+    final success = await chatProvider.retryBlockedMessage(message.id);
+
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('메시지 재전송에 실패했습니다'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  void _showSecurityDetails(SecureMessage message) {
+    final result = message.securityResult;
+    if (result == null) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('보안 검사 결과'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildSecurityDetailRow('위험 레벨', _getThreatLevelText(result.threatLevel)),
+              _buildSecurityDetailRow('위험 유형', result.threatType),
+              _buildSecurityDetailRow('위험도', '${(result.confidenceScore * 100).toInt()}%'),
+
+              const SizedBox(height: 16),
+              const Text('검사 결과:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(result.reason),
+
+              if (result.detectedKeywords.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                const Text('탐지된 키워드:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: result.detectedKeywords.map((keyword) =>
+                      Chip(
+                        label: Text(keyword, style: const TextStyle(fontSize: 12)),
+                        backgroundColor: Colors.red.withOpacity(0.1),
+                      ),
+                  ).toList(),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSecurityDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 80,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+
+  String _getThreatLevelText(ThreatLevel level) {
+    switch (level) {
+      case ThreatLevel.safe:
+        return '안전';
+      case ThreatLevel.low:
+        return '낮음';
+      case ThreatLevel.medium:
+        return '보통';
+      case ThreatLevel.high:
+        return '높음';
+      case ThreatLevel.critical:
+        return '심각';
+    }
+  }
 }
 
-class _MessageBubble extends StatelessWidget {
-  final Message message;
+class _SecureMessageBubble extends StatelessWidget {
+  final SecureMessage message;
   final bool isMe;
   final String nickname;
   final String uniqueId;
+  final VoidCallback? onRetry;
+  final VoidCallback? onShowSecurityDetails;
 
-  const _MessageBubble({
+  const _SecureMessageBubble({
     required this.message,
     required this.isMe,
     required this.nickname,
     required this.uniqueId,
+    this.onRetry,
+    this.onShowSecurityDetails,
   });
 
   @override
@@ -352,26 +549,39 @@ class _MessageBubble extends StatelessWidget {
                   horizontal: 16,
                 ),
                 decoration: BoxDecoration(
-                  color: isMe ? Colors.blue : Colors.grey.shade200,
+                  color: _getMessageBackgroundColor(),
                   borderRadius: BorderRadius.circular(16),
+                  border: _getMessageBorder(),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
+                    // 보안 상태 표시
+                    if (message.status == MessageStatus.blocked ||
+                        message.status == MessageStatus.warning ||
+                        message.status == MessageStatus.failed)
+                      _buildSecurityStatusRow(),
+
+                    // 메시지 내용
                     Text(
-                      message.content,
+                      message.status == MessageStatus.blocked
+                          ? '[차단된 메시지]'
+                          : message.content,
                       style: TextStyle(
-                        color: isMe ? Colors.white : Colors.black,
+                        color: _getMessageTextColor(),
                       ),
                     ),
                     const SizedBox(height: 4),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        // 메시지 상태 아이콘
+                        _buildStatusIcon(),
+                        const SizedBox(width: 4),
                         Text(
                           DateFormat('HH:mm').format(message.timestamp),
                           style: TextStyle(
-                            color: isMe ? Colors.white70 : Colors.black54,
+                            color: _getMessageTextColor().withOpacity(0.7),
                             fontSize: 10,
                           ),
                         ),
@@ -380,7 +590,7 @@ class _MessageBubble extends StatelessWidget {
                           Text(
                             '#$uniqueId',
                             style: TextStyle(
-                              color: isMe ? Colors.white70 : Colors.black54,
+                              color: _getMessageTextColor().withOpacity(0.7),
                               fontSize: 10,
                             ),
                           ),
@@ -396,5 +606,147 @@ class _MessageBubble extends StatelessWidget {
         if (isMe) const SizedBox(width: 8),
       ],
     );
+  }
+
+  Widget _buildSecurityStatusRow() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _getSecurityIcon(),
+            size: 16,
+            color: _getSecurityIconColor(),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            _getSecurityStatusText(),
+            style: TextStyle(
+              fontSize: 12,
+              color: _getSecurityIconColor(),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          if (message.status == MessageStatus.blocked && onRetry != null) ...[
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: onRetry,
+              child: Icon(
+                Icons.refresh,
+                size: 16,
+                color: _getSecurityIconColor(),
+              ),
+            ),
+          ],
+          if (message.securityResult != null && onShowSecurityDetails != null) ...[
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: onShowSecurityDetails,
+              child: Icon(
+                Icons.info_outline,
+                size: 16,
+                color: _getSecurityIconColor(),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusIcon() {
+    switch (message.status) {
+      case MessageStatus.sending:
+        return const SizedBox(
+          width: 12,
+          height: 12,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        );
+      case MessageStatus.sent:
+        return const Icon(Icons.check, size: 12, color: Colors.green);
+      case MessageStatus.blocked:
+        return const Icon(Icons.block, size: 12, color: Colors.red);
+      case MessageStatus.warning:
+        return const Icon(Icons.warning, size: 12, color: Colors.orange);
+      case MessageStatus.failed:
+        return const Icon(Icons.error, size: 12, color: Colors.red);
+    }
+  }
+
+  Color _getMessageBackgroundColor() {
+    switch (message.status) {
+      case MessageStatus.blocked:
+        return Colors.red.withOpacity(0.1);
+      case MessageStatus.warning:
+        return Colors.orange.withOpacity(0.1);
+      case MessageStatus.failed:
+        return Colors.red.withOpacity(0.1);
+      default:
+        return isMe ? Colors.blue : Colors.grey.shade200;
+    }
+  }
+
+  Color _getMessageTextColor() {
+    switch (message.status) {
+      case MessageStatus.blocked:
+      case MessageStatus.failed:
+        return Colors.red.shade700;
+      case MessageStatus.warning:
+        return Colors.orange.shade700;
+      default:
+        return isMe ? Colors.white : Colors.black;
+    }
+  }
+
+  Border? _getMessageBorder() {
+    switch (message.status) {
+      case MessageStatus.blocked:
+        return Border.all(color: Colors.red, width: 1);
+      case MessageStatus.warning:
+        return Border.all(color: Colors.orange, width: 1);
+      case MessageStatus.failed:
+        return Border.all(color: Colors.red.shade300, width: 1);
+      default:
+        return null;
+    }
+  }
+
+  IconData _getSecurityIcon() {
+    switch (message.status) {
+      case MessageStatus.blocked:
+        return Icons.block;
+      case MessageStatus.warning:
+        return Icons.warning;
+      case MessageStatus.failed:
+        return Icons.error;
+      default:
+        return Icons.security;
+    }
+  }
+
+  Color _getSecurityIconColor() {
+    switch (message.status) {
+      case MessageStatus.blocked:
+      case MessageStatus.failed:
+        return Colors.red;
+      case MessageStatus.warning:
+        return Colors.orange;
+      default:
+        return Colors.green;
+    }
+  }
+
+  String _getSecurityStatusText() {
+    switch (message.status) {
+      case MessageStatus.blocked:
+        return '차단됨';
+      case MessageStatus.warning:
+        return '경고';
+      case MessageStatus.failed:
+        return '실패';
+      default:
+        return '안전';
+    }
   }
 }

@@ -24,10 +24,15 @@ android {
         applicationId = "com.example.treehideout"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+
+        // TensorFlow Lite를 위해 minSdk를 26으로 설정
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // 다중 언어 지원 (선택사항)
+        resConfigs "en", "ko"
     }
 
     buildTypes {
@@ -35,7 +40,21 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.debug
+
+            // 릴리즈 빌드 최적화
+            minifyEnabled false
+            shrinkResources false
         }
+
+        debug {
+            // 디버그 빌드 설정
+            debuggable true
+        }
+    }
+
+    // ProGuard 설정 (선택사항)
+    buildFeatures {
+        buildConfig true
     }
 }
 
